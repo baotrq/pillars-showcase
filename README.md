@@ -26,8 +26,8 @@ and a caregiver app that sees both, even when the house loses its Internet.
 </div>
 
 > [!NOTE]
-> A team project for the FPT IoT Challenge 2026 (*Smart Healthcare with Edge AI*, with Silicon Labs),
-> July to September 2026. **First Runner-Up** at the Grand Final in Hanoi. This repo is a **showcase**;
+> Team **MLIoT – Edgelectronix**, FPT IoT Challenge 2026 (*Smart Healthcare with Edge AI*, with Silicon Labs),
+> May to September 2026. **First Runner-Up** at the Grand Final in Hanoi. This repo is a **showcase**;
 > the firmware, Station and Cloud source are private.
 
 > [!IMPORTANT]
@@ -67,12 +67,16 @@ P.I.L.L.A.R.S tries to close that gap at home:
 
 ## 👥 Team
 
+**MLIoT – Edgelectronix**, two Electrical-Electronic and two Robotics & Mechatronics engineering students.
+
+<p align="center"><img src="assets/team.jpg" width="560" alt="The four team members standing in front of the Silicon Labs logo" /></p>
+
 | | Who | What |
 | :--- | :--- | :--- |
-| 💊 | **Bảo Trương** (me) | Pill dispenser hardware and firmware (2 × ESP32 motor layers, Pi-side IR counting, cup-pickup sensor), bench bring-up, the Station's smart-home kiosk UI |
-| ☁️ | **Phuoc Dang** | Cloud backend and caregiver app, Station pairing, BLE ingestion from the wristband, realtime SSE, wristband firmware integration |
-| 🖥️ | **Huỳnh Trọng Khiêm** | Station kiosk and dose flow, dispense scheduling and status LEDs, prescription reading, the LAN-only demo fallback |
-| 🧍 | **Hồ Minh Thao** | Movement safety dashboard and the 3D patient "digital twin" |
+| 🧠 | **Đặng Như Phước** (lead) | Fall, fall-direction and freezing-of-gait models, the voice and cough model, wristband firmware, Cloud backend and caregiver app, Station pairing and the BLE pipeline |
+| 💊 | **Trương Gia Bảo** (me) | Fall-detection dataset collection, pill dispenser hardware and firmware (2 × ESP32 motor layers, Pi-side IR counting, cup-pickup sensor), bench bring-up, the Station's smart-home kiosk UI |
+| 🖥️ | **Huỳnh Trọng Khiêm** | Raspberry Pi Station backend, kiosk dose flow, dispense scheduling and status LEDs, prescription reading, the LAN-only demo fallback |
+| 🔌 | **Hồ Minh Thao** | Wearable hardware (sensors, MCUs, mic, buzzer), power and charging, schematics and PCBs, the movement safety dashboard and 3D patient twin |
 
 <br />
 
@@ -85,6 +89,13 @@ P.I.L.L.A.R.S tries to close that gap at home:
 <tr>
 <td width="50%" align="center"><img src="assets/wearable.jpg" alt="Close-up of the wearable prototypes: a wrist board with a round display on a strap, and a second board with a small screen" /><br /><sub>The P-Wearable prototypes on their straps</sub></td>
 <td width="50%" align="center"><img src="assets/wearable-held.jpg" alt="The wristband prototype held up at the booth next to a smartwatch" /><br /><sub>The wristband at the booth</sub></td>
+</tr>
+</table>
+
+<table>
+<tr>
+<td width="50%" align="center"><img src="assets/slide-wrist-pcb.jpg" alt="Wristband schematic (power and charging, MCU A for IMU fusion and fall/FoG, MCU B for BLE and voice) and its two-layer PCB layout" /><br /><sub>Wristband schematic and PCB: power, MCU A (IMU fusion, fall / FoG), MCU B (BLE, voice)</sub></td>
+<td width="50%" align="center"><img src="assets/slide-ankle-pcb.jpg" alt="Ankle band schematic built around the BGM220 with its IMU, and its PCB layout" /><br /><sub>Ankle band schematic and PCB: BGM220 + IMU</sub></td>
 </tr>
 </table>
 
@@ -147,8 +158,8 @@ A wristband with **two Silicon Labs EFR32xG26 MCUs** and an ankle node:
 
 - **MCU A** pairs with the ankle IMU, fuses both, and runs the **fall and freezing-of-gait** models
   on-device. It drives the buzzer itself, so a fall alarm never waits on Bluetooth or Wi-Fi.
-- **MCU B** is the gateway: it takes compact events from MCU A over UART, runs a small **TFLite Micro
-  cough model** on its microphone, draws on a round GC9A01 TFT, and serves BLE to the Station.
+- **MCU B** is the gateway: it takes compact events from MCU A over UART, listens on its microphone
+  for **"help", "good" and coughs**, draws on a round GC9A01 TFT, and serves BLE to the Station.
 - In normal use it sends **events, not raw streams**. Raw IMU (10 Hz, 20-byte samples) is a debug and
   dataset-collection switch only.
 
@@ -160,9 +171,63 @@ belonging to anyone.
 
 <br />
 
+## ⚡ Edge AI on the wrist
+
+Both models run **on the wristband**, full INT8, on Silicon Labs EFR32xG26 MCUs. Nothing has to reach
+the Pi or the Cloud before the wearer gets an alert.
+
+### Fall direction and freezing of gait, on MCU A
+
+<p align="center"><img src="assets/slide-training.jpg" alt="Training pipeline: UCI, UMAFall and UP-Fall datasets for falls, FoG-STAR for freezing of gait; wrist and ankle IMU at 25 Hz, 64-sample windows with stride 16, 1,122 handcrafted features, LightGBM plus TreeSHAP ranking, a fixed Shared-256 feature set, temporal input of shape B by K by 256, then a binary FoG head and a 4-class fall-direction head" /></p>
+
+- **Data.** Falls from **UCI, UMAFall and UP-Fall**; freezing of gait from **FoG-STAR**. Wrist and ankle
+  IMUs are synchronised at **25 Hz**.
+- **Features you can explain.** Each 2.56 s window (64 samples, hop 0.64 s) becomes **1,122
+  UCI-HAR-style features**. **LightGBM + TreeSHAP** ranks them across both tasks, and the top
+  **256** become one fixed, ordered feature contract shared by training and firmware.
+- **One model, two heads.** A **depthwise-separable temporal convolutional network (DS-TCN)** reads the
+  last 10 windows (`[B, 10, 256]`): three dilated depthwise blocks (d = 1, 2, 4) with LayerNorm, GELU and
+  residuals, then a **freezing-of-gait** head (sigmoid, binary, scored on PR-AUC) and a
+  **fall-direction** head (softmax: no fall, forward, backward, lateral; scored on macro-F1).
+
+<p align="center"><img src="assets/slide-dstcn.jpg" alt="DS-TCN architecture: input of 10 windows by 256 features, linear projection to 64, three depthwise 1D convolution blocks with dilation 1, 2 and 4, then a fall/direction head with 4-way softmax and a freezing-of-gait head with a sigmoid and a 0.4 threshold" /></p>
+
+### Running it on the MVP accelerator
+
+The EFR32xG26 has a **Matrix Vector Processor (MVP)** next to its Cortex-M33. TensorFlow Lite Micro
+keeps control of the graph; the supported kernels (fully connected, conv, depthwise conv, add, mul)
+are offloaded to the MVP, and everything else falls back to CMSIS-NN on the CPU.
+
+<p align="center"><img src="assets/slide-mvp.jpg" alt="Measured on a real xG26 over 100 runs: 236.3 ms CPU-only versus 191.6 ms with partial MVP offload, 18.89% lower latency, 1.233× speedup, 23.29% more throughput, inference uses 29.94% of the 640 ms window, leaving 448.4 ms of headroom" /></p>
+
+| Measured on a real xG26, 100 runs, same INT8 model | |
+| :--- | ---: |
+| CPU only | 236.3 ms |
+| Partial MVP offload | **191.6 ms** (1.23× faster) |
+| Share of each 640 ms window | **29.9 %**, leaving 448 ms of headroom |
+
+### "Help", "good" and coughs, on MCU B
+
+A **TENet12** keyword model (a small temporal-efficient CNN, INT8) listens on MCU B's microphone for four
+classes: **help** (distress), **good** (all fine), **cough**, and **unknown** for everything else.
+It was trained on English keywords from the Multilingual Spoken Words Corpus (4,437 "help" and
+9,711 "good" clips), **COUGHVID** (EPFL, 30k+ recordings), and Silicon Labs MLTK's background speech for
+"unknown". A spoken "help" goes out as an SOS.
+
+<p align="center"><img src="assets/slide-tenet.jpg" alt="TENet12 architecture: a 98 by 104 INT8 spectrogram input, a convolutional stem and three residual stages of depthwise convolutions, classifying help, good, cough and unknown" /></p>
+
+<br />
+
 ## 💊 The dispenser
 
 Eight cups in two layers, one shared pickup cup at the front.
+
+<p align="center"><img src="assets/slide-dispenser-parts.jpg" alt="The dispensing mechanism laid out: the cup, a rotating disc sized to one pill, a sweeper arm, an agitator piece and a motor coupler, next to the assembled two-layer Station with its tablet" /></p>
+
+Each cup is a small 3D-printed pill feeder. A motor turns a **rotating disc** whose pocket is cut to the
+thickness of that pill, so it carries exactly one pill at a time to the drop hole. A **sweeper arm**
+blocks any extra pill riding on top, and an **agitator** stirs the stack so pills keep flowing instead
+of bridging and jamming.
 
 ```mermaid
 flowchart LR
@@ -361,11 +426,27 @@ that switch the Station between production and LAN demo without hand-editing con
 
 <br />
 
+## 🗓️ How it was built
+
+Four months, from a pitch in May to the Grand Final on 18 September.
+
+| When | Stage |
+| :--- | :--- |
+| **Month 1** | Wearable hardware MVP on Silicon Labs dev kits; fall and FoG dataset collection |
+| **Month 2** | Fall / FoG and voice models trained; first wearable firmware; initial Pi station |
+| **Month 3** | A fully working Raspberry Pi Station: BLE gateway, dispenser, kiosk, offline database |
+| **Month 3 – 4** | Wearable, Station and Cloud joined end to end; caregiver app, pairing, realtime alerts |
+| **Month 4** | Custom wristband and ankle PCBs, dispenser bring-up on real hardware, the 3D patient twin, prescription reading |
+| **Final weeks** | Debugging on the real rig, the LAN-only demo fallback, rehearsing the full demo |
+
+<br />
+
 ## 🧰 Stack
 
 | Layer | Stack |
 | :--- | :--- |
-| **Wearable** | 2 × Silicon Labs EFR32xG26 (BRD2608A), BGM220 ankle node, Simplicity SDK, TensorFlow Lite Micro, ICM-40627 IMU, GC9A01 round TFT, I²S mic |
+| **Wearable** | 2 × Silicon Labs EFR32xG26 (BRD2608A), BGM220 ankle node, Simplicity SDK, ICM-40627 IMU, GC9A01 round TFT, I²S mic, custom PCBs |
+| **Edge AI** | LightGBM + TreeSHAP feature selection, DS-TCN (fall direction + FoG), TENet12 (keywords + cough), full-INT8 TensorFlow Lite Micro, MVP accelerator, Silicon Labs MLTK |
 | **Dispenser** | 2 × ESP32 (PlatformIO, C), 4 × L298N, 8 DC motors, 9 IR sensors, 2 × WS2812B strips |
 | **Station** | Raspberry Pi 5, Docker Compose, FastAPI, PostgreSQL, Redis (AOF), Bleak (BLE), Next.js kiosk, face-api.js |
 | **Cloud** | FastAPI, PostgreSQL + Alembic, Redis, background worker, SSE, Tesseract OCR + an LLM via OpenRouter |
@@ -388,6 +469,6 @@ that switch the Station between production and LAN demo without hand-editing con
 
 <div align="center">
 
-**[Bảo Trương](https://github.com/baotrq)** · with Phuoc Dang, Huỳnh Trọng Khiêm and Hồ Minh Thao · FPT IoT Challenge 2026
+**[Bảo Trương](https://github.com/baotrq)** · with Đặng Như Phước, Huỳnh Trọng Khiêm and Hồ Minh Thao · Team MLIoT – Edgelectronix · FPT IoT Challenge 2026
 
 </div>
